@@ -697,12 +697,9 @@ func CreateNewItem(c *fiber.Ctx) error {
 		}, "application/vnd.api+json")
 	}
 	// => *multipart.Form
-	log.Println(body)
 	// Get all files from "documents" key:
-	log.Println(form.File)
 	files := form.File["images"]
 	// => []*multipart.FileHeader
-	log.Println(len(files))
 	if len(files) == 0 {
 		errors["images"] = "Upload minimal 1 (satu) gambar terlebih dahulu."
 	}
@@ -713,11 +710,6 @@ func CreateNewItem(c *fiber.Ctx) error {
 		// => "tutorial.pdf" 360641 "application/pdf"
 		if !validation.CheckFileMime(file.Header["Content-Type"][0]) || !validation.CheckFileSize(uint64(file.Size), 1) {
 			errors["images"] = "Format tidak sesuai/ukuran gambar terlalu besar."
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"code":   "400",
-				"status": "BAD_REQUEST",
-				"errors": errors,
-			})
 		}
 	}
 
@@ -924,137 +916,231 @@ func DetailItem(c *fiber.Ctx) error {
 func UpdateItem(c *fiber.Ctx) error {
 	// get data from request
 	var body struct {
-		Name        string `json:"name" xml:"name" form:"name"`
-		Description string `json:"description" xml:"description" form:"description"`
-		Qty         uint   `json:"qty" xml:"qty" form:"qty"`
-		Images      []byte `json:"images" xml:"images" form:"images"`
+		ID          uint   `json:"id" xml:"id" form:"id"  validate:"required,numeric,gt=0"`
+		Name        string `json:"name" xml:"name" form:"name"  validate:"required,min=3,max=128"`
+		Description string `json:"description" xml:"description" form:"description" validate:"required,min=3"`
+		Qty         uint   `json:"qty" xml:"qty" form:"qty" validate:"required,numeric,gte=0"`
+		Price       uint   `json:"price" xml:"price" form:"price" validate:"required,numeric,gte=0"`
+		// Images      []byte `json:"images" xml:"images" form:"images"`
 	}
 
 	if c.BodyParser(&body) != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "failed to read body.",
-		})
+		if err := c.BodyParser(&body); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"code":   "400",
+				"status": "BAD_REQUEST",
+				"error": fiber.Map{
+					"message": "failed to read body.",
+				},
+			}, "application/vnd.api+json")
+		}
 	}
 
-	itemID := c.Params("id")
+	errors := validation.ReturnValidation(body)
 
-	// query get detail item
-	var resultItem bool
-	if result := initializers.DB.Raw("SELECT 1 FROM items WHERE id=? LIMIT 1;", itemID).Scan(&resultItem); result.Error != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Unable to find items.",
-		})
-	}
-	if !resultItem {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Unable to find items.",
-		})
+	// merchantId
+	merchantID := c.Locals("merchant").(models.Merchant).ID
+
+	// check unique name
+	var resultName uint
+	if result := initializers.DB.Raw("SELECT 1 FROM items WHERE name=? AND id!=? AND merchant_id=?;", body.Name, body.ID, merchantID).Scan(&resultName); result.Error != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"erorr": fiber.Map{
+				"message": "failed to query items.",
+			},
+		}, "application/vnd.api+json")
 	}
 
-	var images []string
-	if result := initializers.DB.Raw("SELECT title AS images FROM images WHERE items_id=?", itemID).Scan(&images); result.Error != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Unable to fetch image.",
-		})
+	if resultName == 1 {
+		errors["Name"] = "Item sudah pernah ditambahkan sebelumnya."
 	}
 
 	var sliceFiles []string
 	// get array image
-	if form, err := c.MultipartForm(); err == nil {
-		// => *multipart.Form
+	form, errForm := c.MultipartForm()
+	if errForm != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"erorr": fiber.Map{
+				"message": "failed to query param.",
+			},
+		}, "application/vnd.api+json")
+	}
+	// => *multipart.Form
 
-		// Get all files from "documents" key:
-		files := form.File["images"]
-		// => []*multipart.FileHeader
-		if len(files) == 0 {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "please upload an image.",
-			})
-		}
+	// Get all files from "documents" key:
+	files := form.File["images"]
+	// => []*multipart.FileHeader
 
-		// Loop through files:
-		for _, file := range files {
-			fmt.Println(file.Filename, file.Size, file.Header["Content-Type"][0])
-			// => "tutorial.pdf" 360641 "application/pdf"
-			if !validation.CheckFileMime(file.Header["Content-Type"][0]) || !validation.CheckFileSize(uint64(file.Size), 1) {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-					"error": "validation error.",
-				})
-			}
+	lenFiles := len(files)
 
-			res, err := password.Generate(16, 16, 0, false, true)
-			if err != nil {
-				fmt.Println(err.Error())
-				fmt.Println("error password")
-			}
-			// get ext file
-			filenameList := strings.Split(file.Filename, ".")
-			ext := filenameList[len(filenameList)-1]
-
-			filename := strconv.FormatInt(time.Now().Unix(), 10) + "_" + res + "." + ext
-			sliceFiles = append(sliceFiles, filename)
-
-			// Save the files to disk:
-			if err := c.SaveFile(file, fmt.Sprintf("./public/image/%s", filename)); err != nil {
-				fmt.Println(err.Error())
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-					"error": "Unable to save image.",
-				})
-			}
+	// Loop through files:
+	for _, file := range files {
+		fmt.Println(file.Filename, file.Size, file.Header["Content-Type"][0])
+		// => "tutorial.pdf" 360641 "application/pdf"
+		if !validation.CheckFileMime(file.Header["Content-Type"][0]) || !validation.CheckFileSize(uint64(file.Size), 1) {
+			errors["images"] = "Format tidak sesuai/ukuran gambar terlalu besar."
 		}
 	}
+
+	if len(errors) != 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"code":   "400",
+			"status": "BAD_REQUEST",
+			"errors": errors,
+		})
+	}
+
+	for _, file := range files {
+		res, err := password.Generate(16, 16, 0, false, true)
+		if err != nil {
+			fmt.Println(err.Error())
+			fmt.Println("error password")
+		}
+		// get ext file
+		filenameList := strings.Split(file.Filename, ".")
+		ext := filenameList[len(filenameList)-1]
+
+		filename := strconv.FormatInt(time.Now().Unix(), 10) + "_" + res + "." + ext
+		sliceFiles = append(sliceFiles, filename)
+
+		// Save the files to disk:
+		if err := c.SaveFile(file, fmt.Sprintf("./public/image/%s", filename)); err != nil {
+			fmt.Println(err.Error())
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"code":   "500",
+				"status": "INTERNAL_SERVER_ERROR",
+				"erorr": fiber.Map{
+					"message": "Unable to save image.",
+				},
+			}, "application/vnd.api+json")
+		}
+	}
+
+	// query get detail item
+	var resultItem bool
+	if result := initializers.DB.Raw("SELECT 1 FROM items WHERE id=? LIMIT 1;", body.ID).Scan(&resultItem); result.Error != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"erorr": fiber.Map{
+				"message": "failed to query items.",
+			},
+		}, "application/vnd.api+json")
+	}
+	if !resultItem {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"erorr": fiber.Map{
+				"message": "Item not found.",
+			},
+		}, "application/vnd.api+json")
+	}
+
+	var images []string
 
 	// save items
 	tx := initializers.DB.Begin()
 
-	if result := tx.Exec("DELETE FROM images WHERE items_id=?;", itemID); result.Error != nil {
-		tx.Rollback()
-		if ok := RemoveFile(sliceFiles); !ok {
+	if lenFiles != 0 {
+		if result := initializers.DB.Raw("SELECT title AS images FROM images WHERE items_id=?", body.ID).Scan(&images); result.Error != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "unable to save items.",
-			})
+				"code":   "500",
+				"status": "INTERNAL_SERVER_ERROR",
+				"erorr": fiber.Map{
+					"message": "Unable to fetch image.",
+				},
+			}, "application/vnd.api+json")
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "unable to save items.",
-		})
+
+		if result := tx.Exec("DELETE FROM images WHERE items_id=?;", body.ID); result.Error != nil {
+			tx.Rollback()
+			if ok := RemoveFile(sliceFiles); !ok {
+				log.Println("Gagal menghapus gambar.")
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"code":   "500",
+				"status": "INTERNAL_SERVER_ERROR",
+				"erorr": fiber.Map{
+					"message": "Gagal menimpa gambar.",
+				},
+			}, "application/vnd.api+json")
+		}
 	}
 
-	result := tx.Exec("UPDATE items SET updated_at=NOW(), name=?, description=?, qty=?, slug=? WHERE id=?;", body.Name, body.Description, body.Qty, slug.Make(body.Name), itemID)
+	result := tx.Exec("UPDATE items SET updated_at=NOW(), name=?, description=?, qty=?, slug=?, price=? WHERE id=?;", body.Name, body.Description, body.Qty, slug.Make(body.Name), body.Price, body.ID)
 	if result.Error != nil {
 		tx.Rollback()
 		if ok := RemoveFile(sliceFiles); !ok {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "unable to save items.",
-			})
+			log.Println("Gagal menghapus gambar.")
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "unable to save items.",
-		})
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"erorr": fiber.Map{
+				"message": "unable to update item.",
+			},
+		}, "application/vnd.api+json")
 	}
+
 	for _, file := range sliceFiles {
-		result = tx.Exec("INSERT INTO images VALUES (?, ?);", itemID, file)
+		result = tx.Exec("INSERT INTO images VALUES (?, ?);", body.ID, file)
 		if result.Error != nil {
 			tx.Rollback()
 			if ok := RemoveFile(sliceFiles); !ok {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-					"error": "unable to save items.",
-				})
+				log.Println("Gagal menghapus gambar.")
 			}
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "unable to save items.",
-			})
+				"code":   "500",
+				"status": "INTERNAL_SERVER_ERROR",
+				"erorr": fiber.Map{
+					"message": "unable to save image.",
+				},
+			}, "application/vnd.api+json")
 		}
 	}
+
+	if lenFiles != 0 {
+		RemoveFile(images)
+	}
+
 	tx.Commit()
 
-	RemoveFile(images)
-
-	// return success
-	return c.Status(fiber.StatusOK).JSON(fiber.Map{"status": fiber.StatusOK, "http_code": fiber.StatusOK, "message": "Success update items."}, "application/vnd.api+json")
+	// respond
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"code":   "200",
+		"status": "OK",
+		"data": fiber.Map{
+			"message": "Berhasil mengubah item.",
+		},
+	}, "application/vnd.api+json")
 }
 
 func RemoveItem(c *fiber.Ctx) error {
-	itemID := c.Params("id")
+	itemID, err := c.ParamsInt("id", 0)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"error": fiber.Map{
+				"message": err.Error(),
+			},
+		}, "application/vnd.api+json")
+	}
+
+	if itemID == 0 {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"error": fiber.Map{
+				"message": "Params not found.",
+			},
+		}, "application/vnd.api+json")
+	}
 
 	// get merchantID
 	merchant := c.Locals("merchant").(models.Merchant)
@@ -1062,34 +1148,56 @@ func RemoveItem(c *fiber.Ctx) error {
 	// query get detail item
 	var merchantID uint
 	if result := initializers.DB.Raw("SELECT merchant_id FROM items WHERE id=?", itemID).Scan(&merchantID); result.Error != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Unable to find merchant.",
-		})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"erorr": fiber.Map{
+				"message": "failed to query merchant.",
+			},
+		}, "application/vnd.api+json")
 	}
 	if merchantID == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Unable to find merchant.",
-		})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"erorr": fiber.Map{
+				"message": "merchant not found.",
+			},
+		}, "application/vnd.api+json")
 	}
 
 	if merchantID != merchant.ID {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Unable to remove items.",
-		})
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"erorr": fiber.Map{
+				"message": "Unable to remove items.",
+			},
+		}, "application/vnd.api+json")
 	}
 
 	tx := initializers.DB.Begin()
 	if result := tx.Exec("UPDATE items SET deleted_at=NOW() WHERE id=?;", itemID); result.Error != nil {
 		tx.Rollback()
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Unable to remove items.",
-		})
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"erorr": fiber.Map{
+				"message": "Unable to remove items.",
+			},
+		}, "application/vnd.api+json")
 	}
 
 	tx.Commit()
 
-	// return success
-	return c.Status(fiber.StatusOK).JSON(fiber.Map{"status": fiber.StatusOK, "http_code": fiber.StatusOK, "message": "Success remove items."}, "application/vnd.api+json")
+	// respond
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"code":   "200",
+		"status": "OK",
+		"data": fiber.Map{
+			"message": "Berhasil menghapus item.",
+		},
+	}, "application/vnd.api+json")
 }
 
 func RemoveFile(files []string) bool {

@@ -55,7 +55,7 @@ func main() {
 	// crud seller items
 	app.Get("/seller/items", middleware.RequireAuth, middleware.CheckRole(config.SELLER), controllers.ListItem)
 	app.Get("/seller/items/:id", middleware.RequireAuth, middleware.CheckRole(config.SELLER), controllers.DetailItem)
-	app.Put("/seller/items/:id", middleware.RequireAuth, middleware.CheckRole(config.SELLER), controllers.UpdateItem)
+	app.Put("/seller/items", middleware.RequireAuth, middleware.CheckRole(config.SELLER), controllers.UpdateItem)
 	app.Post("/seller/items", middleware.RequireAuth, middleware.CheckRole(config.SELLER), controllers.CreateNewItem)
 	app.Delete("/seller/items/:id", middleware.RequireAuth, middleware.CheckRole(config.SELLER), controllers.RemoveItem)
 	// listSeller
