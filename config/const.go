@@ -1,8 +1,9 @@
 package config
 
 const (
-	SELLER    = "seller"
-	DEVELOPER = "developer"
-	ADMIN     = "admin"
-	CUSTOMER  = "customer"
+	ADMINISTRATOR = "superadmin"
+	SELLER        = "seller"
+	DEVELOPER     = "developer"
+	ADMIN         = "admin"
+	CUSTOMER      = "customer"
 )

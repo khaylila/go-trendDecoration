@@ -2,7 +2,9 @@ package validation
 
 import (
 	"regexp"
+	"strings"
 
+	"github.com/go-playground/validator/v10"
 	"github.com/khaylila/go-trendDecoration/initializers"
 )
 
@@ -34,4 +36,30 @@ func IsUnique(value, table, field, ignoreField, ignoreValue string) bool {
 		return false
 	}
 	return true
+}
+
+func ReturnValidation(body interface{}) map[string]string {
+	// var errors []*models.ErrorResponse
+	errors := make(map[string]string)
+
+	validate := validator.New()
+
+	if err := validate.Struct(body); err != nil {
+		for _, err := range err.(validator.ValidationErrors) {
+			field := strings.ToLower(err.Field())
+			if err.Tag() == "required" {
+				errors[field] = "Kolom " + err.Field() + " belum diisi."
+			} else if err.Tag() == "email" {
+				errors[field] = "Format email tidak sesuai."
+			} else if err.Tag() == "min" {
+				errors[field] = "Masukkan minimal " + err.Param() + " karakter."
+			} else if err.Tag() == "max" {
+				errors[field] = "Maksimal " + err.Param() + " karakter."
+			} else if err.Tag() == "eqfield" {
+				errors[field] = "Masukan tidak sesuai."
+			}
+		}
+		return errors
+	}
+	return errors
 }
