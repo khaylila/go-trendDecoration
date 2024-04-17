@@ -12,26 +12,63 @@ import (
 	"github.com/khaylila/go-trendDecoration/config"
 	"github.com/khaylila/go-trendDecoration/initializers"
 	"github.com/khaylila/go-trendDecoration/models"
+	"github.com/khaylila/go-trendDecoration/validation"
 	"github.com/midtrans/midtrans-go"
 	"github.com/midtrans/midtrans-go/coreapi"
 	"github.com/midtrans/midtrans-go/snap"
 )
 
 func Transaction(c *fiber.Ctx) error {
+	// get data from request
+	var body struct {
+		DateStart    string `json:"dateStart" xml:"dateStart" form:"dateStart"  validate:"required,min=10,max=10"`
+		DateEnd      string `json:"dateEnd" xml:"dateEnd" form:"dateEnd"  validate:"required,min=10,max=10"`
+		Qty          uint   `json:"qty" xml:"qty" form:"qty" validate:"required,numeric,gte=1"`
+		Address      string `json:"address" xml:"address" form:"address" validate:"required,min=10,max=128"`
+		MerchantSlug string `json:"merchantSlug" xml:"merchantSlug" form:"merchantSlug" validate:"required,max=256"`
+		ItemSlug     string `json:"itemSlug" xml:"itemSlug" form:"itemSlug" validate:"required,max=256"`
+	}
+
+	if c.BodyParser(&body) != nil {
+		if err := c.BodyParser(&body); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"code":   "400",
+				"status": "BAD_REQUEST",
+				"error": fiber.Map{
+					"err":     err.Error(),
+					"message": "failed to read body.",
+				},
+			}, "application/vnd.api+json")
+		}
+	}
+
+	errors := validation.ReturnValidation(body)
+
+	if len(errors) != 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"code":   "400",
+			"status": "BAD_REQUEST",
+			"errors": errors,
+		})
+	}
 	// prepare
 	// insert order to db
 
 	// insert item to db
 	// get user
 	user := c.Locals("user").(models.User)
-	address := "Rumah Kita Sendiri"
+
 	// prepare Data
 	invoiceId, err := generateInvNumber()
 	fmt.Println(invoiceId)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"Error": "Failed to fetch invoice",
-		})
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"erorr": fiber.Map{
+				"message": "Failed to fetch invoice",
+			},
+		}, "application/vnd.api+json")
 	}
 	orderData := snap.Request{
 		TransactionDetails: midtrans.TransactionDetails{
@@ -48,69 +85,118 @@ func Transaction(c *fiber.Ctx) error {
 	// insert into table project
 	tx := initializers.DB.Begin()
 	var projectId uint
-	if result := tx.Raw("INSERT INTO project(user_id, address, range_date, status, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW()) RETURNING id;", user.ID, address, fmt.Sprintf("[%s, %s)", "2024-04-12", "2024-04-15"), "Menunggu Pembayaran").Scan(&projectId); result.Error != nil {
+	if result := tx.Raw("INSERT INTO project(user_id, address, range_date, status, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW()) RETURNING id;", user.ID, body.Address, fmt.Sprintf("[%s, %s)", body.DateStart, body.DateEnd), "Menunggu Pembayaran").Scan(&projectId); result.Error != nil {
 		tx.Rollback()
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"Error": "Failed to save project",
-		})
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"erorr": fiber.Map{
+				"message": "Failed to save project",
+			},
+		}, "application/vnd.api+json")
 	}
 
-	// get items data
-	var requestItem []models.Items
-	if result := tx.Raw("SELECT * FROM items WHERE id IN (1,2);").Scan(&requestItem); result.Error != nil {
+	// query get detail merchant
+	var merchant models.Merchant
+	if result := initializers.DB.Raw("SELECT * FROM merchants WHERE slug=? AND deleted_at IS null", body.MerchantSlug).Scan(&merchant); result.Error != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"Error": "Failed to fetch items",
-		})
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"erorr": fiber.Map{
+				"message": "Unable to fetch merchant.",
+			},
+		}, "application/vnd.api+json")
+	}
+	if merchant.ID == 0 {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"code":   "404",
+			"status": "NOT_FOUND",
+			"erorr": fiber.Map{
+				"message": "merchant not found.",
+			},
+		}, "application/vnd.api+json")
 	}
 
-	items := make([]midtrans.ItemDetails, len(requestItem))
+	// query get detail item
+	var item models.Items
+	if result := initializers.DB.Raw("SELECT * FROM items WHERE merchant_id = ? AND slug = ? AND deleted_at IS null", merchant.ID, body.ItemSlug).Scan(&item); result.Error != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"erorr": fiber.Map{
+				"message": "Unable to fetch items.",
+			},
+		}, "application/vnd.api+json")
+	}
+	if item.ID == 0 {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"code":   "404",
+			"status": "NOT_FOUND",
+			"erorr": fiber.Map{
+				"message": "items not found.",
+			},
+		}, "application/vnd.api+json")
+	}
+
+	items := make([]midtrans.ItemDetails, 1)
 
 	// Iterate over requestItem and populate orderData.Items
-	for i, item := range requestItem {
 
-		if result := tx.Exec("INSERT INTO project_item(project_id, item_id, qty, price) VALUES (?, ?, ?, ?);", projectId, item.ID, 2, 20000); result.Error != nil {
-			tx.Rollback()
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"Error": "Failed to save project Item",
-			})
-		}
+	if result := tx.Exec("INSERT INTO project_item(project_id, item_id, qty, price) VALUES (?, ?, ?, ?);", projectId, item.ID, body.Qty, item.Price); result.Error != nil {
+		tx.Rollback()
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"erorr": fiber.Map{
+				"message": "Failed to save project Item",
+			},
+		}, "application/vnd.api+json")
+	}
 
-		orderData.TransactionDetails.GrossAmt += (int64(2) * 20000)
-		items[i] = midtrans.ItemDetails{
-			ID:           strconv.FormatUint(uint64(item.ID), 10),
-			Name:         item.Name,
-			Price:        20000,
-			Qty:          2,
-			Category:     "Dekorasi Pernikahan",
-			MerchantName: "Trend Decoration",
-		}
+	orderData.TransactionDetails.GrossAmt += (int64(body.Qty) * int64(item.Price))
+	items[0] = midtrans.ItemDetails{
+		ID:           strconv.FormatUint(uint64(item.ID), 10),
+		Name:         item.Name,
+		Price:        int64(item.Price),
+		Qty:          int32(body.Qty),
+		MerchantName: merchant.Name,
 	}
 
 	orderData.Items = &items
-
-	fmt.Println(orderData.TransactionDetails.GrossAmt)
 
 	//
 	url, err := config.GenerateSnapURL(orderData)
 	if err != nil {
 		return c.Status(fiber.StatusGatewayTimeout).JSON(fiber.Map{
-			"Error": "Failed to generate snap_url",
-		})
+			"code":   "504",
+			"status": "GATEWAY_TIMEOUT",
+			"erorr": fiber.Map{
+				"message": "Failed to generate snap_url",
+			},
+		}, "application/vnd.api+json")
 	}
 
 	// save invoice
 	if result := tx.Exec("INSERT INTO invoice(amount, status, snap_url, id, expiry_time, project_id, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW());", orderData.TransactionDetails.GrossAmt, "pending", url, invoiceId, time.Now().Add(time.Minute*5), projectId); result.Error != nil {
 		tx.Rollback()
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"Error": "Failed to save invoice",
-		})
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"erorr": fiber.Map{
+				"message": "Failed to save invoice",
+			},
+		}, "application/vnd.api+json")
 	}
 
 	tx.Commit()
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
-		"snap_url": url,
-	})
+		"code":   "200",
+		"status": "OK",
+		"data": fiber.Map{
+			"snap_url": url,
+		},
+	}, "application/vnd.api+json")
 }
 
 func VerifyPayment(c *fiber.Ctx) error {
@@ -212,5 +298,5 @@ func generateInvNumber() (string, error) {
 	if result := initializers.DB.Raw("SELECT COUNT(id) AS count_created_at FROM invoice WHERE DATE(created_at) = CURRENT_DATE;").Scan(&countCreatedAt); result.Error != nil {
 		return "", errors.New("unable to fetch invoice")
 	}
-	return "INV-" + time.Now().Format("20060102") + "-" + fmt.Sprintf("%04d", countCreatedAt+3), nil
+	return "INV-" + time.Now().Format("20060102") + "-" + fmt.Sprintf("%04d", countCreatedAt+1), nil
 }

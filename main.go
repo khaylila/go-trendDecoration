@@ -25,7 +25,7 @@ func main() {
 
 	// Or extend your config for customization
 	app.Use(cors.New(cors.Config{
-		AllowOrigins: "http://127.0.0.1:8080, http://localhost:8080",
+		AllowOrigins: "http://127.0.0.1:8080, http://localhost:8080, http://sewavendor.khaylila.my.id, http://khaylila.my.id",
 		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
 	}))
 
@@ -46,8 +46,10 @@ func main() {
 	app.Get("/search", controllers.SearchItem)
 	app.Post("/cart", middleware.RequireAuth, middleware.CheckRole(config.CUSTOMER), controllers.CheckChart, controllers.InsertToChart)
 
+	app.Get("/items", controllers.ListAllItems)
+
 	// payment
-	app.Post("/payment", middleware.RequireAuth, controllers.Transaction)
+	app.Post("/payment", middleware.RequireAuth, middleware.CheckRole(config.CUSTOMER), controllers.Transaction)
 	// callback midtrans
 	app.Post("/payment/verify", controllers.VerifyPayment)
 
@@ -72,7 +74,7 @@ func main() {
 
 	// get items by merchant
 	app.Get("/:merchant", controllers.ListItemFromMerchant)
-	app.Get("/:merchant/:itemSlug", controllers.DetailItemWithSlug)
+	app.Get("/:merchantSlug/:itemSlug", controllers.CustomerItemDetail)
 
 	app.Listen(":" + os.Getenv("PORT"))
 }
