@@ -30,6 +30,14 @@ func main() {
 	}))
 
 	// testing
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{
+			"code":   "200",
+			"status": "OK",
+			"data":   "Haloo",
+		}, "application/vnd.api+json")
+	})
+
 	app.Get("/validate", middleware.RequireAuth, controllers.Validate)
 	app.Post("/profile", middleware.RequireAuth, controllers.UserProfile)
 
@@ -47,8 +55,11 @@ func main() {
 	app.Post("/cart", middleware.RequireAuth, middleware.CheckRole(config.CUSTOMER), controllers.CheckChart, controllers.InsertToChart)
 
 	app.Get("/items", controllers.ListAllItems)
+	// check qty item by date
+	app.Get("/items/checkDate", controllers.CheckItemByDate)
 
 	// payment
+	// app.Post("/payment", middleware.RequireAuth, middleware.CheckRole(config.CUSTOMER), controllers.CheckProject, controllers.Transaction)
 	app.Post("/payment", middleware.RequireAuth, middleware.CheckRole(config.CUSTOMER), controllers.Transaction)
 	// callback midtrans
 	app.Post("/payment/verify", controllers.VerifyPayment)
@@ -70,7 +81,16 @@ func main() {
 	app.Put("/seller", middleware.RequireAuth, middleware.CheckRole(config.ADMINISTRATOR), controllers.UpdateSeller)
 
 	// project
-	app.Get("/projects", controllers.ListProject)
+	app.Get("/projects", middleware.RequireAuth, middleware.CheckRole(config.CUSTOMER), controllers.ListProject)
+	app.Get("/projects/:id", middleware.RequireAuth, middleware.CheckRole(config.CUSTOMER), controllers.DetailProject)
+	app.Get("/projects/timeline/:id", middleware.RequireAuth, middleware.CheckRole(config.CUSTOMER), controllers.ProjectTimeline)
+	app.Post("/projects/timeline/:id", middleware.RequireAuth, middleware.CheckRole(config.CUSTOMER), controllers.ProjectTimelineAdd)
+	app.Get("/merchant/projects", middleware.RequireAuth, middleware.CheckRole(config.SELLER), controllers.MerchantProject)
+	app.Post("/merchant/projects/confirm/:id", middleware.RequireAuth, middleware.CheckRole(config.SELLER), controllers.ConfirmMerchantProject)
+	app.Get("/merchant/projects/:id", middleware.RequireAuth, middleware.CheckRole(config.SELLER), controllers.MerchantDetailProject)
+	app.Post("/merchant/projects/done/:id", middleware.RequireAuth, middleware.CheckRole(config.SELLER), controllers.ConfirmDoneMerchantProject)
+	app.Get("/merchant/projects/timeline/:id", middleware.RequireAuth, middleware.CheckRole(config.SELLER), controllers.MerchantProjectTimeline)
+	app.Post("/merchant/projects/timeline/:id", middleware.RequireAuth, middleware.CheckRole(config.SELLER), controllers.MerchantProjectTimelineAdd)
 
 	// get items by merchant
 	app.Get("/:merchant", controllers.ListItemFromMerchant)

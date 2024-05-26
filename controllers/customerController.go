@@ -12,12 +12,15 @@ import (
 func ListItemFromMerchant(c *fiber.Ctx) error {
 	// get query
 	page := c.QueryInt("page", 1)
-	limit := c.QueryInt("limit", 4)
+	limit := c.QueryInt("limit", 99)
 
 	merchantSlug := c.Params("merchant")
 
-	var merchant models.Merchant
-	if result := initializers.DB.Raw("SELECT * FROM merchants WHERE slug = ? AND deleted_at IS NULL LIMIT 1;", merchantSlug).Scan(&merchant); result.Error != nil {
+	var merchant struct {
+		Merchant models.Merchant `json:"merchant"`
+		Items    []models.Items  `json:"items"`
+	}
+	if result := initializers.DB.Raw("SELECT * FROM merchants WHERE slug=? AND deleted_at IS NULL LIMIT 1;", merchantSlug).Scan(&merchant.Merchant); result.Error != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"code":   "500",
 			"status": "INTERNAL_SERVER_ERROR",
@@ -27,7 +30,7 @@ func ListItemFromMerchant(c *fiber.Ctx) error {
 		}, "application/vnd.api+json")
 	}
 
-	if merchant.ID == 0 {
+	if merchant.Merchant.ID == 0 {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"code":   "404",
 			"status": "NOT_FOUND",
@@ -39,8 +42,8 @@ func ListItemFromMerchant(c *fiber.Ctx) error {
 
 	offset := ((page - 1) * limit)
 
-	var items []models.Items
-	if result := initializers.DB.Raw("SELECT * FROM items WHERE merchant_id=? AND deleted_at IS null ORDER BY id ASC LIMIT ? OFFSET ?", merchant.ID, limit, offset).Scan(&items); result.Error != nil {
+	// var items []models.Items
+	if result := initializers.DB.Raw("SELECT * FROM items WHERE merchant_id=? AND deleted_at IS null ORDER BY id ASC LIMIT ? OFFSET ?", merchant.Merchant.ID, limit, offset).Scan(&merchant.Items); result.Error != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"code":   "500",
 			"status": "INTERNAL_SERVER_ERROR",
@@ -50,8 +53,8 @@ func ListItemFromMerchant(c *fiber.Ctx) error {
 		}, "application/vnd.api+json")
 	}
 
-	for i, item := range items {
-		if result := initializers.DB.Raw("SELECT items_id, CONCAT(CAST(? AS TEXT), title) AS title FROM images WHERE items_id=?", fmt.Sprintf("%s/img/", c.BaseURL()), item.ID).Scan(&items[i].Image); result.Error != nil {
+	for i, item := range merchant.Items {
+		if result := initializers.DB.Raw("SELECT items_id, CONCAT(CAST(? AS TEXT), title) AS title FROM images WHERE items_id=?", fmt.Sprintf("%s/img/", c.BaseURL()), item.ID).Scan(&merchant.Items[i].Image); result.Error != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"code":   "500",
 				"status": "INTERNAL_SERVER_ERROR",
@@ -60,10 +63,11 @@ func ListItemFromMerchant(c *fiber.Ctx) error {
 				},
 			}, "application/vnd.api+json")
 		}
+		merchant.Items[i].Merchant = merchant.Merchant
 	}
 
 	var countItems uint
-	if result := initializers.DB.Raw("SELECT COUNT(id) as countItems FROM items WHERE merchant_id=? AND deleted_at IS NULL", merchant.ID).Scan(&countItems); result.Error != nil {
+	if result := initializers.DB.Raw("SELECT COUNT(id) as countItems FROM items WHERE merchant_id=? AND deleted_at IS NULL", merchant.Merchant.ID).Scan(&countItems); result.Error != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"code":   "500",
 			"status": "INTERNAL_SERVER_ERROR",
@@ -84,7 +88,7 @@ func ListItemFromMerchant(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
 		"code":   "200",
 		"status": "OK",
-		"data":   items,
+		"data":   merchant,
 		"page": fiber.Map{
 			"limit":     limit,
 			"total":     countItems,
@@ -291,20 +295,119 @@ func CheckChart(c *fiber.Ctx) error {
 		available bool
 	}
 	if result := initializers.DB.Raw("SELECT date_series::date AS rent_date, (items.qty > COALESCE(SUM(c.qty), 0))::boolean AS available FROM public.carts c JOIN items ON item_id = items.id JOIN generate_series(lower(c.rent_range), upper(c.rent_range), '1 day'::interval) AS date_series ON date_series::date >= ?::date AND date_series::date <= ?::date WHERE item_id = ? GROUP BY date_series::date, items.qty ORDER BY date_series::date;", body.RentStart, body.RentEnd, body.ItemsID).Scan(&carts); result.Error != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "failed to query chart item.",
-		})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"error": fiber.Map{
+				"message": "failed to query chart item.",
+			},
+		}, "application/vnd.api+json")
 	}
 
 	for _, cart := range carts {
 		if !cart.available {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Items not available.",
-			})
+				"code":   "400",
+				"status": "BAD_REQUEST",
+				"error": fiber.Map{
+					"message": "Items not available.",
+				},
+			}, "application/vnd.api+json")
 		}
 	}
 
 	return c.Next()
+}
+
+func CheckItemByDate(c *fiber.Ctx) error {
+	// get the req body
+	getParameter := c.Queries()
+
+	// query get detail merchant
+	var merchant models.Merchant
+	if result := initializers.DB.Raw("SELECT * FROM merchants WHERE slug=? AND deleted_at IS null", getParameter["merchantSlug"]).Scan(&merchant); result.Error != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"erorr": fiber.Map{
+				"message": "Unable to fetch merchant.",
+			},
+		}, "application/vnd.api+json")
+	}
+	if merchant.ID == 0 {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"code":   "404",
+			"status": "NOT_FOUND",
+			"erorr": fiber.Map{
+				"message": "merchant not found.",
+			},
+		}, "application/vnd.api+json")
+	}
+
+	// query get detail item
+	var item models.Items
+	if result := initializers.DB.Raw("SELECT * FROM items WHERE merchant_id = ? AND slug = ? AND deleted_at IS null", merchant.ID, getParameter["itemSlug"]).Scan(&item); result.Error != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"erorr": fiber.Map{
+				"message": "Unable to fetch items.",
+			},
+		}, "application/vnd.api+json")
+	}
+	if item.ID == 0 {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"code":   "404",
+			"status": "NOT_FOUND",
+			"erorr": fiber.Map{
+				"message": "items not found.",
+			},
+		}, "application/vnd.api+json")
+	}
+
+	var projects []struct {
+		RentDate   time.Time
+		Available  bool
+		ItemQty    int
+		ProjectQty int
+	}
+	if result := initializers.DB.Raw("SELECT date_series::date AS rent_date, (items.qty > COALESCE(SUM (project_item.qty), 0))::boolean AS available, items.qty AS item_qty, SUM (project_item.qty) AS project_qty FROM project p JOIN project_item on p.id = project_item.project_id JOIN items ON project_item.item_id = items.id JOIN generate_series(lower(p.range_date), upper(p.range_date), '1 day'::interval) AS date_series  ON date_series::date >= ?::date AND date_series::date <= ?::date  WHERE project_item.item_id = ? GROUP BY date_series::date, items.qty ORDER BY date_series::date;", getParameter["dateStart"], getParameter["dateEnd"], item.ID).Scan(&projects); result.Error != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"code":   "500",
+			"status": "INTERNAL_SERVER_ERROR",
+			"error": fiber.Map{
+				"message": "failed to query item.",
+			},
+		}, "application/vnd.api+json")
+	}
+	itemAvailable := 0
+	for _, project := range projects {
+		if !project.Available {
+			return c.Status(fiber.StatusOK).JSON(fiber.Map{
+				"code":   "200",
+				"status": "OK",
+				"data": fiber.Map{
+					"item_qty": 0,
+				},
+			}, "application/vnd.api+json")
+		} else {
+			if itemAvailable == 0 || itemAvailable > (project.ItemQty-project.ProjectQty) {
+				itemAvailable = project.ItemQty - project.ProjectQty
+			}
+		}
+	}
+
+	if len(projects) == 0 {
+		itemAvailable = int(item.Qty)
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"code":   "200",
+		"status": "OK",
+		"data": fiber.Map{
+			"item_qty": itemAvailable,
+		},
+	}, "application/vnd.api+json")
 }
 
 func InsertToChart(c *fiber.Ctx) error {
